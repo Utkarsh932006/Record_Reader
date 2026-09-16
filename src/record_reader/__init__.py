@@ -1,12 +1,14 @@
 import re
+import warnings
 from glob import glob
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
+
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 # === USER CONFIG ===
 DOCS_DIR = Path(__file__).resolve().parent.parent.parent / "Docs"
@@ -14,7 +16,9 @@ OUTPUT_FILE = DOCS_DIR / "Generated_ISP_Report.xlsx"
 NOC_FILE = "ISP.xlsx"
 MASTER_SITE_FILE = "Copy of ISP (003).xlsx"
 MASTER_SITE_SHEET = "ISP"
-TABLE_STYLE = "TableStyleLight9"  # e.g. TableStyleMedium2, TableStyleMedium9, TableStyleLight9
+TABLE_STYLE = (
+    "TableStyleLight9"  # e.g. TableStyleMedium2, TableStyleMedium9, TableStyleLight9
+)
 
 # Map filename substring → ISP name. Order matters: first match wins.
 # Add new ISPs here when their files arrive.
@@ -319,7 +323,9 @@ def write_report(sheet1, sheet2, output_path):
         # Apply Table style, auto-fit column widths and row heights
         for ws, df, table_name in sheets_meta:
             max_col_letter = get_column_letter(ws.max_column)
-            table = Table(displayName=table_name, ref=f"A1:{max_col_letter}{ws.max_row}")
+            table = Table(
+                displayName=table_name, ref=f"A1:{max_col_letter}{ws.max_row}"
+            )
             table.tableStyleInfo = TableStyleInfo(
                 name=TABLE_STYLE,
                 showFirstColumn=False,
@@ -341,11 +347,12 @@ def write_report(sheet1, sheet2, output_path):
                     if cell.value is not None:
                         val_str = (
                             f"{cell.value * 100:.2f}%"
-                            if cell.number_format == "0.00%" and isinstance(cell.value, (int, float))
+                            if cell.number_format == "0.00%"
+                            and isinstance(cell.value, (int, float))
                             else str(cell.value)
                         )
                         max_len = max(max_len, len(val_str))
-                ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+                ws.column_dimensions[col_letter].width = max(max_len + 2, 12)
 
 
 def main() -> None:
