@@ -6,5 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+#Company Docs
+Docs/
+.~lock*
+
 # Virtual environments
 .venv
