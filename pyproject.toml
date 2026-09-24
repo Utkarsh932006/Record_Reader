@@ -1,7 +1,7 @@
 [project]
 name = "record-reader"
 version = "0.1.0"
-description = "Add your description here"
+description = "This is a tool for reading and analyzing ISP record data."
 readme = "README.md"
 authors = [
     { name = "Utkarsh Mishra", email = "utkarsh932006@gmail.com" }

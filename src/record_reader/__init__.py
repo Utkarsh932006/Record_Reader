@@ -14,6 +14,7 @@ OUTPUT_FILE = DOCS_DIR / "Generated_ISP_Report.xlsx"
 NOC_FILE = "ISP.xlsx"
 MASTER_SITE_FILE = "Copy of ISP (003).xlsx"
 MASTER_SITE_SHEET = "ISP"
+MASTER_MAPPING_FILE = "Site_ISP_Master_Mapping.xlsx"
 TABLE_STYLE = (
     "TableStyleLight9"  # e.g. TableStyleMedium2, TableStyleMedium9, TableStyleLight9
 )
@@ -207,7 +208,7 @@ def calculate_overlap_minutes(group):
     return round(total / 60, 2)
 
 
-def build_sheet1(noc_df, master_sites):
+def build_sheet1(noc_df, master_sites, site_mapping):
     """Daily SLA sheet: one row per site per day, sorted by Site → Date."""
     report_month = noc_df["Time"].dt.to_period("M").mode()[0]
     all_days = pd.date_range(
@@ -216,15 +217,20 @@ def build_sheet1(noc_df, master_sites):
 
     rows = []
     for (date, site), group in noc_df.groupby([noc_df["Time"].dt.floor("D"), "Site"]):
-        isps = group["ISP"].unique()
-        isp1, isp2 = (
-            (isps[0] if len(isps) > 0 else ""),
-            (isps[1] if len(isps) > 1 else ""),
-        )
-        ckt1 = str(group[group["ISP"] == isp1]["CKT_ID"].iloc[0] or "") if isp1 else ""
-        ckt2 = str(group[group["ISP"] == isp2]["CKT_ID"].iloc[0] or "") if isp2 else ""
-        down1 = group[group["ISP"] == isp1]["Downtime (min)"].sum() if isp1 else 0
-        down2 = group[group["ISP"] == isp2]["Downtime (min)"].sum() if isp2 else 0
+        mapping = site_mapping.get(site, {})
+        isp1 = mapping.get("ISP1 Name") or ""
+        isp2 = mapping.get("ISP2 Name") or ""
+        
+        ckt1 = str(mapping.get("ISP1 CKT ID") or "")
+        ckt2 = str(mapping.get("ISP2 CKT ID") or "")
+        if ckt1 in ["Unknown_Airtel", "Unknown_Jio", "No_CKT", "nan"]: ckt1 = ""
+        if ckt2 in ["Unknown_Airtel", "Unknown_Jio", "No_CKT", "nan"]: ckt2 = ""
+
+        # Normalize the group ISPs for downtime calculation
+        group_isps = group["ISP"].map(lambda x: ISP_NORMALIZE.get(x, x))
+        down1 = group[group_isps == isp1]["Downtime (min)"].sum() if isp1 else 0
+        down2 = group[group_isps == isp2]["Downtime (min)"].sum() if isp2 else 0
+        
         actual_down = calculate_overlap_minutes(group)
         rows.append(
             {
@@ -247,23 +253,33 @@ def build_sheet1(noc_df, master_sites):
     existing = (
         set(zip(df_result["Date"], df_result["Site"])) if not df_result.empty else set()
     )
-    zero_rows = [
-        {
-            "Date": d.strftime("%d-%m-%Y"),
-            "Site": s,
-            "ISP1 Name": "",
-            "ISP1 CKT ID": "",
-            "ISP1 Down (min)": 0,
-            "ISP2 Name": "",
-            "ISP2 CKT ID": "",
-            "ISP2 Down (min)": 0,
-            "Actual Site Down (min)": 0,
-            "Daily SLA %": 1.0,
-        }
-        for d in all_days
-        for s in master_sites
-        if (d.strftime("%d-%m-%Y"), s) not in existing
-    ]
+    
+    zero_rows = []
+    for d in all_days:
+        for s in master_sites:
+            if (d.strftime("%d-%m-%Y"), s) not in existing:
+                mapping = site_mapping.get(s, {})
+                isp1 = mapping.get("ISP1 Name") or ""
+                isp2 = mapping.get("ISP2 Name") or ""
+                ckt1 = str(mapping.get("ISP1 CKT ID") or "")
+                ckt2 = str(mapping.get("ISP2 CKT ID") or "")
+                if ckt1 in ["Unknown_Airtel", "Unknown_Jio", "No_CKT", "nan"]: ckt1 = ""
+                if ckt2 in ["Unknown_Airtel", "Unknown_Jio", "No_CKT", "nan"]: ckt2 = ""
+                
+                zero_rows.append(
+                    {
+                        "Date": d.strftime("%d-%m-%Y"),
+                        "Site": s,
+                        "ISP1 Name": isp1,
+                        "ISP1 CKT ID": ckt1,
+                        "ISP1 Down (min)": 0,
+                        "ISP2 Name": isp2,
+                        "ISP2 CKT ID": ckt2,
+                        "ISP2 Down (min)": 0,
+                        "Actual Site Down (min)": 0,
+                        "Daily SLA %": 1.0,
+                    }
+                )
 
     if zero_rows:
         df_result = pd.concat([df_result, pd.DataFrame(zero_rows)], ignore_index=True)
@@ -301,24 +317,17 @@ def build_sheet2(matched_df):
     )
 
 
-def build_minute_sheets(noc_df, master_sites):
+def build_minute_sheets(noc_df, master_sites, site_mapping):
     """Minute-by-minute ISP up/down status per site, split into weekly DataFrames."""
     report_month = noc_df["Time"].dt.to_period("M").mode()[0]
     month_start = report_month.start_time
     total_days = report_month.day
     total_minutes = total_days * 1440
 
-    # Build site → {isp_normalized: ckt_id} mapping from NOC data
-    site_info = {site: {} for site in master_sites}
-    for _, r in noc_df.iterrows():
-        site, isp_norm = r["Site"], ISP_NORMALIZE.get(r["ISP"], r["ISP"])
-        ckt = str(r["CKT_ID"] or "")
-        site_info.setdefault(site, {}).setdefault(isp_norm, ckt)
-
     # Build per-site, per-ISP downtime boolean arrays (True = down)
     site_down = {
         site: {isp: np.zeros(total_minutes, dtype=bool) for isp in ISP_COLUMNS}
-        for site in site_info
+        for site in master_sites
     }
     for _, r in noc_df.iterrows():
         site, isp_norm = r["Site"], ISP_NORMALIZE.get(r["ISP"], r["ISP"])
@@ -337,14 +346,18 @@ def build_minute_sheets(noc_df, master_sites):
         week_days = min(7, total_days - day)
         w_start, w_end = day * 1440, (day + week_days) * 1440
         rows = []
-        for site in sorted(site_info):
-            active = set(site_info[site].keys())
-            ckt_str = ",".join(
-                filter(
-                    None,
-                    [site_info[site].get(i, "") for i in ISP_COLUMNS if i in active],
-                )
-            )
+        for site in sorted(master_sites):
+            mapping = site_mapping.get(site, {})
+            isp1 = mapping.get("ISP1 Name") or ""
+            isp2 = mapping.get("ISP2 Name") or ""
+            ckt1 = str(mapping.get("ISP1 CKT ID") or "")
+            ckt2 = str(mapping.get("ISP2 CKT ID") or "")
+            if ckt1 in ["Unknown_Airtel", "Unknown_Jio", "No_CKT", "nan"]: ckt1 = ""
+            if ckt2 in ["Unknown_Airtel", "Unknown_Jio", "No_CKT", "nan"]: ckt2 = ""
+            
+            active = {i for i in [isp1, isp2] if i}
+            ckt_str = ",".join(filter(None, [ckt1, ckt2]))
+            
             for m in range(w_start, w_end):
                 dt = month_start + pd.Timedelta(minutes=m)
                 st = {}
@@ -448,10 +461,16 @@ def main() -> None:
     master_sites = sorted(master["Site"].dropna().unique())
     print(f"Master site list: {len(master_sites)} sites")
 
+    mapping_path = DOCS_DIR / MASTER_MAPPING_FILE
+    if mapping_path.exists():
+        site_mapping = pd.read_excel(mapping_path).set_index("Location").to_dict("index")
+    else:
+        site_mapping = {}
+
     print("Building reports...")
-    sheet1 = build_sheet1(noc_df, master_sites)
+    sheet1 = build_sheet1(noc_df, master_sites, site_mapping)
     sheet2 = build_sheet2(matched)
-    weekly_sheets = build_minute_sheets(noc_df, master_sites)
+    weekly_sheets = build_minute_sheets(noc_df, master_sites, site_mapping)
     write_report(sheet1, sheet2, weekly_sheets, OUTPUT_FILE)
     print(f"Done! → {OUTPUT_FILE}")
 
