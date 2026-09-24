@@ -1,12 +1,10 @@
 import re
-import warnings
 from glob import glob
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
+import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
@@ -44,6 +42,18 @@ ISP_COLUMN_MAP = {
     },
     # Add new ISPs here with their column names
 }
+
+# Normalize NOC ISP names to canonical column names
+ISP_NORMALIZE = {
+    "Airtel": "Airtel",
+    "Airtel_CKT": "Airtel",
+    "JIO": "Jio",
+    "Ishan": "Ishan",
+    "CountryLink_103.134.44.66": "CountryLink",
+    "CDC": "Airtel",
+    # Add new ISP aliases here
+}
+ISP_COLUMNS = ["Airtel", "Jio", "Ishan", "CountryLink"]
 
 
 def extract_ckt_id(host):
@@ -291,68 +301,103 @@ def build_sheet2(matched_df):
     )
 
 
-def write_report(sheet1, sheet2, output_path):
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+def build_minute_sheets(noc_df):
+    """Minute-by-minute ISP up/down status per site, split into weekly DataFrames."""
+    report_month = noc_df["Time"].dt.to_period("M").mode()[0]
+    month_start = report_month.start_time
+    total_days = report_month.day
+    total_minutes = total_days * 1440
+
+    # Build site → {isp_normalized: ckt_id} mapping from NOC data
+    site_info = {}
+    for _, r in noc_df.iterrows():
+        site, isp_norm = r["Site"], ISP_NORMALIZE.get(r["ISP"], r["ISP"])
+        ckt = str(r["CKT_ID"] or "")
+        site_info.setdefault(site, {}).setdefault(isp_norm, ckt)
+
+    # Build per-site, per-ISP downtime boolean arrays (True = down)
+    site_down = {
+        site: {isp: np.zeros(total_minutes, dtype=bool) for isp in ISP_COLUMNS}
+        for site in site_info
+    }
+    for _, r in noc_df.iterrows():
+        site, isp_norm = r["Site"], ISP_NORMALIZE.get(r["ISP"], r["ISP"])
+        if isp_norm not in site_down.get(site, {}):
+            continue
+        s = max(0, int((r["Time"] - month_start).total_seconds() // 60))
+        e = min(total_minutes, int((r["Recovery time"] - month_start).total_seconds() // 60))
+        if s < e:
+            site_down[site][isp_norm][s:e] = True
+
+    # Generate weekly DataFrames
+    weeks, day, week_num = [], 0, 1
+    while day < total_days:
+        week_days = min(7, total_days - day)
+        w_start, w_end = day * 1440, (day + week_days) * 1440
+        rows = []
+        for site in sorted(site_info):
+            active = set(site_info[site].keys())
+            ckt_str = ",".join(filter(None, [site_info[site].get(i, "") for i in ISP_COLUMNS if i in active]))
+            for m in range(w_start, w_end):
+                dt = month_start + pd.Timedelta(minutes=m)
+                st = {}
+                for col in ISP_COLUMNS:
+                    st[col] = ("Down" if site_down[site][col][m] else "Up") if col in active else ""
+                active_down = [st[c] == "Down" for c in ISP_COLUMNS if c in active]
+                rows.append({
+                    "Location": site, "CktId": ckt_str,
+                    "Date": dt.strftime("%d-%m-%Y"), "Time": dt.strftime("%H:%M"),
+                    **{c: st[c] for c in ISP_COLUMNS},
+                    "Link": "Down" if all(active_down) and active_down else "Up",
+                })
+        weeks.append((f"Week {week_num}", pd.DataFrame(rows)))
+        day += week_days
+        week_num += 1
+    return weeks
+
+
+def write_report(sheet1, sheet2, weekly_sheets, output_path):
+    with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
+        workbook = writer.book
+        pct_fmt = workbook.add_format({"num_format": "0.00%"})
+        text_fmt = workbook.add_format({"num_format": "@"})
+        
+        # Write sheets
         sheet1.to_excel(writer, index=False, sheet_name="Daily SLA")
         sheet2.to_excel(writer, index=False, sheet_name="Circuit Details")
+        for week_name, week_df in weekly_sheets:
+            week_df.to_excel(writer, index=False, sheet_name=week_name)
 
         sheets_meta = [
-            (writer.sheets["Daily SLA"], sheet1, "Daily_SLA_Table"),
-            (writer.sheets["Circuit Details"], sheet2, "Circuit_Details_Table"),
+            ("Daily SLA", sheet1, ["ISP1 CKT ID", "ISP2 CKT ID"], ["Daily SLA %"]),
+            ("Circuit Details", sheet2, ["CKT ID"], []),
         ]
+        for week_name, week_df in weekly_sheets:
+            sheets_meta.append((week_name, week_df, ["CktId"], []))
 
-        # Format SLA as percentage
-        ws1 = writer.sheets["Daily SLA"]
-        sla_col = sheet1.columns.get_loc("Daily SLA %") + 1
-        for row in range(2, ws1.max_row + 1):
-            ws1.cell(row=row, column=sla_col).number_format = "0.00%"
-
-        # Format CKT ID columns as text
-        for ws, cols in [
-            (ws1, ["ISP1 CKT ID", "ISP2 CKT ID"]),
-            (writer.sheets["Circuit Details"], ["CKT ID"]),
-        ]:
-            for col_name in cols:
-                df = sheet1 if ws == ws1 else sheet2
-                if col_name not in df.columns:
-                    continue
-                col_idx = df.columns.get_loc(col_name) + 1
-                for row in range(2, ws.max_row + 1):
-                    ws.cell(row=row, column=col_idx).number_format = "@"
-
-        # Apply Table style, auto-fit column widths and row heights
-        for ws, df, table_name in sheets_meta:
-            max_col_letter = get_column_letter(ws.max_column)
-            table = Table(
-                displayName=table_name, ref=f"A1:{max_col_letter}{ws.max_row}"
-            )
-            table.tableStyleInfo = TableStyleInfo(
-                name=TABLE_STYLE,
-                showFirstColumn=False,
-                showLastColumn=False,
-                showRowStripes=True,
-                showColumnStripes=False,
-            )
-            ws.add_table(table)
-
-            ws.row_dimensions[1].height = 24
-            for r in range(2, ws.max_row + 1):
-                ws.row_dimensions[r].height = 19
-
-            for col in ws.columns:
-                col_letter = get_column_letter(col[0].column)
-                header_str = str(col[0].value or "")
-                max_len = len(header_str)
-                for cell in col[1:]:
-                    if cell.value is not None:
-                        val_str = (
-                            f"{cell.value * 100:.2f}%"
-                            if cell.number_format == "0.00%"
-                            and isinstance(cell.value, (int, float))
-                            else str(cell.value)
-                        )
-                        max_len = max(max_len, len(val_str))
-                ws.column_dimensions[col_letter].width = max(max_len + 2, 12)
+        for sheet_name, df, txt_cols, pct_cols in sheets_meta:
+            worksheet = writer.sheets[sheet_name]
+            
+            # Add table
+            table_name = sheet_name.replace(" ", "_") + "_Table"
+            worksheet.add_table(0, 0, max(1, df.shape[0]), df.shape[1] - 1, {
+                "columns": [{"header": c} for c in df.columns],
+                "style": TABLE_STYLE,
+            })
+            
+            # Format and width for each column
+            for i, col_name in enumerate(df.columns):
+                # Calculate max length efficiently
+                max_val_len = df[col_name].astype(str).map(len).max() if not df.empty else 0
+                max_len = max(len(str(col_name)), max_val_len)
+                
+                fmt = None
+                if col_name in txt_cols:
+                    fmt = text_fmt
+                elif col_name in pct_cols:
+                    fmt = pct_fmt
+                
+                worksheet.set_column(i, i, max(max_len + 2, 12), fmt)
 
 
 def main() -> None:
@@ -383,7 +428,8 @@ def main() -> None:
     print("Building reports...")
     sheet1 = build_sheet1(noc_df, master_sites)
     sheet2 = build_sheet2(matched)
-    write_report(sheet1, sheet2, OUTPUT_FILE)
+    weekly_sheets = build_minute_sheets(noc_df)
+    write_report(sheet1, sheet2, weekly_sheets, OUTPUT_FILE)
     print(f"Done! → {OUTPUT_FILE}")
 
 
