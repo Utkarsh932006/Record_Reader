@@ -1,10 +1,10 @@
 import re
+import warnings
 from glob import glob
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
@@ -301,7 +301,7 @@ def build_sheet2(matched_df):
     )
 
 
-def build_minute_sheets(noc_df):
+def build_minute_sheets(noc_df, master_sites):
     """Minute-by-minute ISP up/down status per site, split into weekly DataFrames."""
     report_month = noc_df["Time"].dt.to_period("M").mode()[0]
     month_start = report_month.start_time
@@ -309,7 +309,7 @@ def build_minute_sheets(noc_df):
     total_minutes = total_days * 1440
 
     # Build site → {isp_normalized: ckt_id} mapping from NOC data
-    site_info = {}
+    site_info = {site: {} for site in master_sites}
     for _, r in noc_df.iterrows():
         site, isp_norm = r["Site"], ISP_NORMALIZE.get(r["ISP"], r["ISP"])
         ckt = str(r["CKT_ID"] or "")
@@ -325,7 +325,9 @@ def build_minute_sheets(noc_df):
         if isp_norm not in site_down.get(site, {}):
             continue
         s = max(0, int((r["Time"] - month_start).total_seconds() // 60))
-        e = min(total_minutes, int((r["Recovery time"] - month_start).total_seconds() // 60))
+        e = min(
+            total_minutes, int((r["Recovery time"] - month_start).total_seconds() // 60)
+        )
         if s < e:
             site_down[site][isp_norm][s:e] = True
 
@@ -337,19 +339,32 @@ def build_minute_sheets(noc_df):
         rows = []
         for site in sorted(site_info):
             active = set(site_info[site].keys())
-            ckt_str = ",".join(filter(None, [site_info[site].get(i, "") for i in ISP_COLUMNS if i in active]))
+            ckt_str = ",".join(
+                filter(
+                    None,
+                    [site_info[site].get(i, "") for i in ISP_COLUMNS if i in active],
+                )
+            )
             for m in range(w_start, w_end):
                 dt = month_start + pd.Timedelta(minutes=m)
                 st = {}
                 for col in ISP_COLUMNS:
-                    st[col] = ("Down" if site_down[site][col][m] else "Up") if col in active else ""
+                    st[col] = (
+                        ("Down" if site_down[site][col][m] else "Up")
+                        if col in active
+                        else ""
+                    )
                 active_down = [st[c] == "Down" for c in ISP_COLUMNS if c in active]
-                rows.append({
-                    "Location": site, "CktId": ckt_str,
-                    "Date": dt.strftime("%d-%m-%Y"), "Time": dt.strftime("%H:%M"),
-                    **{c: st[c] for c in ISP_COLUMNS},
-                    "Link": "Down" if all(active_down) and active_down else "Up",
-                })
+                rows.append(
+                    {
+                        "Location": site,
+                        "CktId": ckt_str,
+                        "Date": dt.strftime("%d-%m-%Y"),
+                        "Time": dt.strftime("%H:%M"),
+                        **{c: st[c] for c in ISP_COLUMNS},
+                        "Link": "Down" if all(active_down) and active_down else "Up",
+                    }
+                )
         weeks.append((f"Week {week_num}", pd.DataFrame(rows)))
         day += week_days
         week_num += 1
@@ -361,7 +376,7 @@ def write_report(sheet1, sheet2, weekly_sheets, output_path):
         workbook = writer.book
         pct_fmt = workbook.add_format({"num_format": "0.00%"})
         text_fmt = workbook.add_format({"num_format": "@"})
-        
+
         # Write sheets
         sheet1.to_excel(writer, index=False, sheet_name="Daily SLA")
         sheet2.to_excel(writer, index=False, sheet_name="Circuit Details")
@@ -377,26 +392,34 @@ def write_report(sheet1, sheet2, weekly_sheets, output_path):
 
         for sheet_name, df, txt_cols, pct_cols in sheets_meta:
             worksheet = writer.sheets[sheet_name]
-            
+
             # Add table
-            table_name = sheet_name.replace(" ", "_") + "_Table"
-            worksheet.add_table(0, 0, max(1, df.shape[0]), df.shape[1] - 1, {
-                "columns": [{"header": c} for c in df.columns],
-                "style": TABLE_STYLE,
-            })
-            
+            table_name = sheet_name.replace(" ", "_") + "_Table"  # noqa: F841
+            worksheet.add_table(
+                0,
+                0,
+                max(1, df.shape[0]),
+                df.shape[1] - 1,
+                {
+                    "columns": [{"header": c} for c in df.columns],
+                    "style": TABLE_STYLE,
+                },
+            )
+
             # Format and width for each column
             for i, col_name in enumerate(df.columns):
                 # Calculate max length efficiently
-                max_val_len = df[col_name].astype(str).map(len).max() if not df.empty else 0
+                max_val_len = (
+                    df[col_name].astype(str).map(len).max() if not df.empty else 0
+                )
                 max_len = max(len(str(col_name)), max_val_len)
-                
+
                 fmt = None
                 if col_name in txt_cols:
                     fmt = text_fmt
                 elif col_name in pct_cols:
                     fmt = pct_fmt
-                
+
                 worksheet.set_column(i, i, max(max_len + 2, 12), fmt)
 
 
@@ -428,7 +451,7 @@ def main() -> None:
     print("Building reports...")
     sheet1 = build_sheet1(noc_df, master_sites)
     sheet2 = build_sheet2(matched)
-    weekly_sheets = build_minute_sheets(noc_df)
+    weekly_sheets = build_minute_sheets(noc_df, master_sites)
     write_report(sheet1, sheet2, weekly_sheets, OUTPUT_FILE)
     print(f"Done! → {OUTPUT_FILE}")
 
