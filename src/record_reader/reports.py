@@ -27,10 +27,13 @@ def report_month_bounds(
 
 
 def _infer_month(noc_df: pd.DataFrame, fw_df: pd.DataFrame) -> pd.Period | None:
-    if not noc_df.empty:
-        return noc_df["Time"].dt.to_period("M").mode()[0]
-    if not fw_df.empty:
-        return fw_df["Time"].dt.to_period("M").mode()[0]
+    for df in (noc_df, fw_df):
+        if not df.empty and "Time" in df.columns:
+            valid = df["Time"].dropna()
+            if not valid.empty:
+                modes = valid.dt.to_period("M").mode()
+                if not modes.empty:
+                    return modes.iloc[0]
     return None
 
 
@@ -80,7 +83,7 @@ def build_daily_sla(
     month: pd.Period | None = None,
 ) -> pd.DataFrame:
     report_month, month_start, month_end = report_month_bounds(noc_df, fw_df, month)
-    if report_month is None or month_start is None:
+    if report_month is None or month_start is None or month_end is None:
         return pd.DataFrame()
 
     days = pd.date_range(month_start, month_end - pd.Timedelta(seconds=1), freq="D")
@@ -114,8 +117,24 @@ def build_daily_sla(
                     "Both ISPs Down (min)": round(both, 2),
                     "Actual Site Down (min)": round(actual, 2),
                     "Daily SLA %": (1440 - actual) / 1440.0,
-                }
+                },
             )
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "Date",
+                "Site",
+                "ISP1 Name",
+                "ISP1 CKT ID",
+                "ISP1 Down (min)",
+                "ISP2 Name",
+                "ISP2 CKT ID",
+                "ISP2 Down (min)",
+                "Both ISPs Down (min)",
+                "Actual Site Down (min)",
+                "Daily SLA %",
+            ],
+        )
     df_result = pd.DataFrame(rows)
     df_result["_sort"] = pd.to_datetime(df_result["Date"], format="%d-%m-%Y")
     return (
@@ -146,7 +165,7 @@ def build_circuit_details(matched_df: pd.DataFrame) -> pd.DataFrame:
                 "NOC End": fmt(r.get("Recovery time")),
                 "ISP Start": fmt(r.get("ISP_Start")),
                 "ISP End": fmt(r.get("ISP_End")),
-            }
+            },
         )
     df = pd.DataFrame(rows)
     return df.sort_values(["Site", "CKT ID", "Match Status"]).reset_index(drop=True)
@@ -157,12 +176,12 @@ def build_firewall_details(fw_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     def fmt(t):
-        return t.strftime("%d-%m-%Y %H:%M:%S") if pd.notna(t) else ""
+        return t.strftime("%d-%m-%Y %H:%M:%S") if bool(pd.notna(t)) else ""
 
     rows = [
         {
             "Host": r["Host"],
-            "Mapped Site": r["Site"] if pd.notna(r.get("Site")) else "UNMAPPED",
+            "Mapped Site": (r["Site"] if bool(pd.notna(r.get("Site"))) else "UNMAPPED"),
             "Start": fmt(r["Time"]),
             "End": fmt(r["Recovery time"]),
             "Duration (min)": r.get("Duration_min", 0),
@@ -175,7 +194,11 @@ def build_firewall_details(fw_df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(["Mapped Site", "Start"]).reset_index(drop=True)
 
 
-def build_summary(daily_sla_df: pd.DataFrame, fw_df: pd.DataFrame, noc_df: pd.DataFrame) -> pd.DataFrame:
+def build_summary(
+    daily_sla_df: pd.DataFrame,
+    fw_df: pd.DataFrame,
+    noc_df: pd.DataFrame,
+) -> pd.DataFrame:
     if daily_sla_df.empty:
         return pd.DataFrame()
 
@@ -197,7 +220,7 @@ def build_summary(daily_sla_df: pd.DataFrame, fw_df: pd.DataFrame, noc_df: pd.Da
     worst = daily_sla_df.loc[worst_idx][
         ["Site", "Date", "Actual Site Down (min)"]
     ].rename(
-        columns={"Date": "Worst Day", "Actual Site Down (min)": "Worst Day Down (min)"}
+        columns={"Date": "Worst Day", "Actual Site Down (min)": "Worst Day Down (min)"},
     )
     summary = summary.merge(worst, on="Site", how="left")
 
@@ -237,7 +260,7 @@ def build_summary(daily_sla_df: pd.DataFrame, fw_df: pd.DataFrame, noc_df: pd.Da
             "ISP2_Down": "ISP2 Down Total (min)",
             "Both_Down": "Both ISPs Down Total (min)",
             "Actual_Down": "Actual Down Total (min)",
-        }
+        },
     )
     col_order = [
         "Site",
@@ -269,11 +292,12 @@ def build_data_quality(
 ) -> pd.DataFrame:
     issues: list[dict] = []
     master_set = set(master_sites)
-    master_upper = {s.upper(): s for s in master_sites}
 
     if not noc_df.empty:
         for host, site, ckt, isp in (
-            noc_df[["Host", "Site", "CKT_ID", "ISP"]].drop_duplicates().itertuples(index=False)
+            noc_df[["Host", "Site", "CKT_ID", "ISP"]]
+            .drop_duplicates()
+            .itertuples(index=False)
         ):
             if site not in master_set:
                 issues.append(
@@ -282,7 +306,7 @@ def build_data_quality(
                         "Category": "unmapped_noc_site",
                         "Key": host,
                         "Detail": f"Parsed site {site!r} is not in master mapping",
-                    }
+                    },
                 )
             if not ckt:
                 issues.append(
@@ -291,7 +315,7 @@ def build_data_quality(
                         "Category": "missing_ckt",
                         "Key": host,
                         "Detail": f"No circuit id parsed (ISP={isp})",
-                    }
+                    },
                 )
             elif site in site_mapping:
                 mapping = site_mapping[site]
@@ -306,8 +330,11 @@ def build_data_quality(
                             "Severity": "warning",
                             "Category": "ckt_mismatch",
                             "Key": host,
-                            "Detail": f"CKT {ckt} not listed for {site} (master has {sorted(expected)})",
-                        }
+                            "Detail": (
+                                f"CKT {ckt} not listed for {site} "
+                                f"(master has {sorted(expected)})"
+                            ),
+                        },
                     )
             norm = normalize_isp(isp, cfg)
             if norm and norm not in cfg.isp_columns:
@@ -316,8 +343,10 @@ def build_data_quality(
                         "Severity": "warning",
                         "Category": "unknown_isp",
                         "Key": host,
-                        "Detail": f"ISP {isp!r} normalized to {norm!r} is not in isp_columns",
-                    }
+                        "Detail": (
+                            f"ISP {isp!r} normalized to {norm!r} is not in isp_columns"
+                        ),
+                    },
                 )
 
     if not fw_df.empty:
@@ -329,7 +358,7 @@ def build_data_quality(
                     "Category": "unmapped_firewall_host",
                     "Key": host,
                     "Detail": "Firewall hostname did not resolve to a master site",
-                }
+                },
             )
 
     seen: dict[str, str] = {}
@@ -345,7 +374,7 @@ def build_data_quality(
                         "Category": "duplicate_ckt",
                         "Key": ckt,
                         "Detail": f"Circuit shared by {seen[ckt]} and {site}",
-                    }
+                    },
                 )
             else:
                 seen[ckt] = site
@@ -360,7 +389,7 @@ def build_data_quality(
                         "Category": "match_status",
                         "Key": status,
                         "Detail": f"{n} circuit rows with status {status}",
-                    }
+                    },
                 )
 
     unused = []
@@ -376,17 +405,28 @@ def build_data_quality(
                 "Category": "sites_with_no_events",
                 "Key": f"{len(unused)} sites",
                 "Detail": ", ".join(unused[:20]) + ("…" if len(unused) > 20 else ""),
-            }
+            },
         )
 
     if not issues:
         return pd.DataFrame(
-            [{"Severity": "info", "Category": "ok", "Key": "", "Detail": "No data-quality issues"}]
+            [
+                {
+                    "Severity": "info",
+                    "Category": "ok",
+                    "Key": "",
+                    "Detail": "No data-quality issues",
+                },
+            ],
         )
     order = {"error": 0, "warning": 1, "info": 2}
     df = pd.DataFrame(issues)
     df["_o"] = df["Severity"].map(order)
-    return df.sort_values(["_o", "Category", "Key"]).drop(columns=["_o"]).reset_index(drop=True)
+    return (
+        df.sort_values(["_o", "Category", "Key"])
+        .drop(columns=["_o"])
+        .reset_index(drop=True)
+    )
 
 
 def build_minute_sheets(
@@ -488,7 +528,8 @@ def build_minute_sheets(
                     col_vals.append(np.full(w_minutes, "", dtype=object))
             data[col] = np.concatenate(col_vals)
         link_vals = [
-            np.where(fw_down[site][w_start:w_end], "Down", "Up") for site in sorted_sites
+            np.where(fw_down[site][w_start:w_end], "Down", "Up")
+            for site in sorted_sites
         ]
         data["Link"] = np.concatenate(link_vals)
         weeks.append((f"Week {week_num}", pd.DataFrame(data)))

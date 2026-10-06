@@ -64,7 +64,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         )
     return AppConfig(
         table_style=raw.get("table_style", "TableStyleLight9"),
-        master_mapping_file=raw.get("master_mapping_file", "Site_ISP_Master_Mapping.xlsx"),
+        master_mapping_file=raw.get(
+            "master_mapping_file",
+            "Site_ISP_Master_Mapping.xlsx",
+        ),
         output_file=raw.get("output_file", "Generated_ISP_Report.xlsx"),
         noc_pattern=raw.get("noc_pattern", "Haier ISP *.xlsx"),
         firewall_pattern=raw.get("firewall_pattern", "Haier Firewall *.xlsx"),

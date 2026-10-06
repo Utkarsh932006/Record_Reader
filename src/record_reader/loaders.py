@@ -21,7 +21,11 @@ log = logging.getLogger("record_reader")
 INVALID_CKT = {"", "Unknown_Airtel", "Unknown_Jio", "No_CKT", "nan", "None"}
 
 
-def find_file(docs_dir: Path, pattern: str, exclude: set[str] | None = None) -> Path | None:
+def find_file(
+    docs_dir: Path,
+    pattern: str,
+    exclude: set[str] | None = None,
+) -> Path | None:
     exclude = set(exclude or [])
     for path in sorted(glob(str(docs_dir / pattern))):
         if Path(path).name not in exclude:
@@ -33,10 +37,16 @@ def parse_duration_to_minutes(duration_str) -> float:
     if pd.isna(duration_str):
         return 0.0
     s = str(duration_str)
+    weeks = re.search(r"(\d+)w", s)
+    days = re.search(r"(\d+)d", s)
     hours = re.search(r"(\d+)h", s)
     minutes = re.search(r"(\d+)m", s)
     seconds = re.search(r"(\d+)s", s)
     total = 0.0
+    if weeks:
+        total += int(weeks.group(1)) * 7 * 24 * 60
+    if days:
+        total += int(days.group(1)) * 24 * 60
     if hours:
         total += int(hours.group(1)) * 60
     if minutes:
@@ -109,6 +119,17 @@ def _apply_event_window(
     return pd.DataFrame(records).reset_index(drop=True)
 
 
+def _parse_dt_series(series: pd.Series) -> pd.Series:
+    if series.empty or pd.api.types.is_datetime64_any_dtype(series):
+        return pd.to_datetime(series, errors="coerce")
+    first = series.dropna().iloc[0] if not series.dropna().empty else ""
+    first_str = str(first).strip()
+    dayfirst = bool(
+        len(first_str) >= 10 and first_str[2] in "-/" and first_str[:2].isdigit(),
+    )
+    return pd.to_datetime(series, errors="coerce", dayfirst=dayfirst)
+
+
 def load_noc(
     path: Path,
     cfg: AppConfig,
@@ -116,17 +137,23 @@ def load_noc(
     window_end: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     df = pd.read_excel(path, sheet_name=cfg.noc_sheet)
+    df.columns = [str(c).strip() for c in df.columns]
     parsed = df["Host"].map(lambda h: parse_host(h, cfg))
     df["CKT_ID"] = [p.ckt_id or "" for p in parsed]
     df["Site"] = [p.site for p in parsed]
     df["ISP"] = [p.isp for p in parsed]
-    df["Time"] = pd.to_datetime(df["Time"])
-    df["Recovery time"] = pd.to_datetime(df["Recovery time"])
+    df["Time"] = _parse_dt_series(df["Time"])
+    df["Recovery time"] = _parse_dt_series(df["Recovery time"])
     df["_ISP_Norm"] = df["ISP"].map(lambda x: normalize_isp(x, cfg))
     df["Duration_min"] = df["Duration"].map(parse_duration_to_minutes)
     df["_parse_source"] = [p.source for p in parsed]
     df = _apply_event_window(
-        df, "Time", "Recovery time", window_start, window_end, cfg.flap_min_minutes
+        df,
+        "Time",
+        "Recovery time",
+        window_start,
+        window_end,
+        cfg.flap_min_minutes,
     )
     return df
 
@@ -139,18 +166,28 @@ def load_firewall(
     window_end: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     df = pd.read_excel(path, sheet_name=cfg.firewall_sheet)
+    df.columns = [str(c).strip() for c in df.columns]
     df["Site"] = df["Host"].map(lambda x: fuzzy_match_site(x, master_sites, cfg))
-    df["Time"] = pd.to_datetime(df["Time"])
-    df["Recovery time"] = pd.to_datetime(df["Recovery time"])
+    df["Time"] = _parse_dt_series(df["Time"])
+    df["Recovery time"] = _parse_dt_series(df["Recovery time"])
     df["Duration_min"] = df["Duration"].map(parse_duration_to_minutes)
     df = _apply_event_window(
-        df, "Time", "Recovery time", window_start, window_end, cfg.flap_min_minutes
+        df,
+        "Time",
+        "Recovery time",
+        window_start,
+        window_end,
+        cfg.flap_min_minutes,
     )
     return df
 
 
 def detect_isp_name(filename: str, cfg: AppConfig) -> str | None:
-    for pattern, isp in cfg.isp_file_map.items():
+    for pattern, isp in sorted(
+        cfg.isp_file_map.items(),
+        key=lambda x: len(x[0]),
+        reverse=True,
+    ):
         if pattern in filename:
             return isp
     return None
@@ -161,16 +198,21 @@ def load_isp_file(path: Path, isp_name: str, cfg: AppConfig) -> pd.DataFrame:
     if not col_map:
         return pd.DataFrame()
 
-    if col_map.sheet:
-        df = pd.read_excel(path, sheet_name=col_map.sheet, dtype=str)
-    else:
-        for sheet in pd.ExcelFile(path).sheet_names:
-            df = pd.read_excel(path, sheet_name=sheet, dtype=str)
-            if col_map.circuit_id in df.columns and col_map.start in df.columns:
-                break
+    with pd.ExcelFile(path) as xl:
+        if col_map.sheet:
+            if col_map.sheet not in xl.sheet_names:
+                return pd.DataFrame()
+            df = xl.parse(sheet_name=col_map.sheet, dtype=str)
         else:
-            return pd.DataFrame()
+            for sheet in xl.sheet_names:
+                df = xl.parse(sheet_name=sheet, dtype=str)
+                df.columns = [str(c).strip() for c in df.columns]
+                if col_map.circuit_id in df.columns and col_map.start in df.columns:
+                    break
+            else:
+                return pd.DataFrame()
 
+    df.columns = [str(c).strip() for c in df.columns]
     cid, start, end = col_map.circuit_id, col_map.start, col_map.end
     if not all(c in df.columns for c in [cid, start, end]):
         return pd.DataFrame()
@@ -178,13 +220,21 @@ def load_isp_file(path: Path, isp_name: str, cfg: AppConfig) -> pd.DataFrame:
     df = df.dropna(subset=[cid, start, end])
     df = df.rename(columns={cid: "CKT_ID", start: "ISP_Start", end: "ISP_End"})
     df["CKT_ID"] = df["CKT_ID"].map(canonical_ckt)
-    df["ISP_Start"] = pd.to_datetime(df["ISP_Start"])
-    df["ISP_End"] = pd.to_datetime(df["ISP_End"])
+    df["ISP_Start"] = _parse_dt_series(df["ISP_Start"])
+    df["ISP_End"] = _parse_dt_series(df["ISP_End"])
+    df = df.dropna(subset=["CKT_ID", "ISP_Start", "ISP_End"])
+    df = df[df["CKT_ID"] != ""]
     df["ISP_Name"] = isp_name
-    return df[["CKT_ID", "ISP_Start", "ISP_End", "ISP_Name"]]
+    return pd.DataFrame(
+        df[["CKT_ID", "ISP_Start", "ISP_End", "ISP_Name"]],
+    ).reset_index(drop=True)
 
 
-def load_all_isp_files(docs_dir: Path, cfg: AppConfig, exclude_names: set[str] | None = None) -> pd.DataFrame:
+def load_all_isp_files(
+    docs_dir: Path,
+    cfg: AppConfig,
+    exclude_names: set[str] | None = None,
+) -> pd.DataFrame:
     exclude = set(exclude_names or [])
     frames = []
     for path in sorted(glob(str(docs_dir / "*.xlsx"))):

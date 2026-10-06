@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass
 
@@ -27,16 +28,21 @@ def canonical_ckt(val) -> str:
     if val is None:
         return ""
     s = str(val).strip()
-    if s.lower() in {"", "nan", "none", "nat", "unknown_airtel", "unknown_jio", "no_ckt"}:
+    if s.lower() in {
+        "",
+        "nan",
+        "none",
+        "nat",
+        "unknown_airtel",
+        "unknown_jio",
+        "no_ckt",
+    }:
         return ""
-    if s.endswith(".0"):
-        s = s[:-2]
+    s = s.removesuffix(".0")
     if "e+" in s.lower() or "e-" in s.lower():
-        try:
+        with contextlib.suppress(ValueError):
             s = f"{float(s):.0f}"
-        except ValueError:
-            pass
-    return s.replace(".0", "")
+    return s.removesuffix(".0")
 
 
 def _alias_site(site: str | None, cfg: AppConfig) -> str | None:
@@ -74,7 +80,12 @@ def parse_host(host: str, cfg: AppConfig) -> ParsedHost:
             else:
                 ckt = extract_ckt_id(h)
             site = _alias_site(rule.get("site"), cfg)
-            return ParsedHost(site=site, isp=rule.get("isp"), ckt_id=ckt, source="override")
+            return ParsedHost(
+                site=site,
+                isp=rule.get("isp"),
+                ckt_id=ckt,
+                source="override",
+            )
 
     parts = h.split("-")
     if len(parts) >= 3 and parts[1].upper() == "PUNE" and parts[2].upper() == "CDC":
@@ -107,7 +118,7 @@ def fuzzy_match_site(host: str, master_sites: list[str], cfg: AppConfig) -> str 
     by_upper = _master_lookup(master_sites)
 
     alias = cfg.firewall_host_aliases.get(host_str) or cfg.firewall_host_aliases.get(
-        host_str.upper()
+        host_str.upper(),
     )
     if alias:
         return by_upper.get(alias.upper(), alias)
@@ -134,7 +145,11 @@ def fuzzy_match_site(host: str, master_sites: list[str], cfg: AppConfig) -> str 
     # Chandigarh-Zirakpur-Branch → BR-ZIRAKPUR_CHANDIGHAR
     parts = host_str.split("-")
     if len(parts) > 1:
-        joined = "_".join(p.upper() for p in parts if p.upper() not in {"BRANCH", "WAREHOUSE", "ZONAL", "FW"})
+        joined = "_".join(
+            p.upper()
+            for p in parts
+            if p.upper() not in {"BRANCH", "WAREHOUSE", "ZONAL", "FW"}
+        )
         for ms in master_sites:
             token = ms.split("-", 1)[-1].upper().replace("-", "_")
             if token and token in joined:
@@ -150,12 +165,19 @@ def fuzzy_match_site(host: str, master_sites: list[str], cfg: AppConfig) -> str 
 
 
 def _fuzzy_city(
-    city: str, prefix: str, master_sites: list[str], cfg: AppConfig
+    city: str,
+    prefix: str,
+    master_sites: list[str],
+    cfg: AppConfig,
 ) -> str | None:
     city_parts = [ms.split("-", 1)[-1] for ms in master_sites]
     if not city_parts:
         return None
-    result = fuzz_process.extractOne(city, city_parts, score_cutoff=cfg.fuzzy_score_cutoff)
+    result = fuzz_process.extractOne(
+        city,
+        city_parts,
+        score_cutoff=cfg.fuzzy_score_cutoff,
+    )
     if not result:
         return None
     best, _score, _ = result

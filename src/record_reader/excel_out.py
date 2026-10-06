@@ -5,7 +5,11 @@ from pathlib import Path
 import pandas as pd
 
 
-def write_report(sheets: list[tuple[str, pd.DataFrame, list[str], list[str]]], output_path: Path, table_style: str) -> None:
+def write_report(
+    sheets: list[tuple[str, pd.DataFrame, list[str], list[str]]],
+    output_path: Path,
+    table_style: str,
+) -> None:
     """Write report sheets to Excel.
 
     sheets: list of (sheet_name, dataframe, text_cols, pct_cols).
@@ -34,10 +38,16 @@ def write_report(sheets: list[tuple[str, pd.DataFrame, list[str], list[str]]], o
                 },
             )
             for i, col_name in enumerate(df.columns):
+                col_series = df[col_name].iloc[:500] if len(df) > 500 else df[col_name]
                 max_val_len = (
-                    df[col_name].map(lambda x: len(str(x))).max() if not df.empty else 0
+                    col_series.map(lambda x: len(str(x))).max()
+                    if not col_series.empty
+                    else 0
                 )
-                max_len = max(len(str(col_name)), int(max_val_len) if pd.notna(max_val_len) else 0)
+                max_len = max(
+                    len(str(col_name)),
+                    int(max_val_len) if bool(pd.notna(max_val_len)) else 0,
+                )
                 fmt = None
                 if col_name in txt_cols:
                     fmt = text_fmt

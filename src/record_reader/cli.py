@@ -35,7 +35,7 @@ log = logging.getLogger("record_reader")
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate an ISP availability report from Excel exports."
+        description="Generate an ISP availability report from Excel exports.",
     )
     parser.add_argument(
         "--docs-dir",
@@ -44,7 +44,9 @@ def _parser() -> argparse.ArgumentParser:
         help="Directory containing the Excel input files (default: ./Docs).",
     )
     parser.add_argument(
-        "--config", type=Path, help="Path to a YAML configuration file."
+        "--config",
+        type=Path,
+        help="Path to a YAML configuration file.",
     )
     parser.add_argument(
         "--output",
@@ -71,7 +73,8 @@ def _report_month(value: str | None) -> pd.Period | None:
     if not re.fullmatch(r"\d{4}-\d{2}", value):
         raise ValueError("--month must use YYYY-MM")
     try:
-        return pd.Period(value, freq="M")
+        p = pd.Period(value, freq="M")
+        return p if isinstance(p, pd.Period) else None
     except ValueError as exc:
         raise ValueError("--month must use YYYY-MM") from exc
 
@@ -104,11 +107,15 @@ def run(args: argparse.Namespace) -> Path:
 
     noc_df = load_noc(noc_path, cfg) if noc_path else pd.DataFrame()
     fw_df = (
-        load_firewall(firewall_path, master_sites, cfg) if firewall_path else pd.DataFrame()
+        load_firewall(firewall_path, master_sites, cfg)
+        if firewall_path
+        else pd.DataFrame()
     )
     selected_month = _report_month(args.month)
     report_month, window_start, window_end = report_month_bounds(
-        noc_df, fw_df, selected_month
+        noc_df,
+        fw_df,
+        selected_month,
     )
     if report_month is None:
         raise ValueError("No alert data found to infer a report month; pass --month.")
@@ -118,14 +125,16 @@ def run(args: argparse.Namespace) -> Path:
             noc_df = load_noc(noc_path, cfg, window_start, window_end)
         if firewall_path:
             fw_df = load_firewall(
-                firewall_path, master_sites, cfg, window_start, window_end
+                firewall_path,
+                master_sites,
+                cfg,
+                window_start,
+                window_end,
             )
 
     isp_df = load_all_isp_files(docs_dir, cfg, excluded)
     matched = match_by_overlap(noc_df, isp_df, cfg, ckt_to_sites(site_mapping))
-    daily_sla = build_daily_sla(
-        noc_df, fw_df, master_sites, site_mapping, report_month
-    )
+    daily_sla = build_daily_sla(noc_df, fw_df, master_sites, site_mapping, report_month)
     sheets: list[tuple[str, pd.DataFrame, list[str], list[str]]] = [
         ("Summary", build_summary(daily_sla, fw_df, noc_df), [], ["Monthly SLA %"]),
         (
@@ -147,7 +156,12 @@ def run(args: argparse.Namespace) -> Path:
         sheets.extend(
             (name, frame, ["CktId"], [])
             for name, frame in build_minute_sheets(
-                noc_df, fw_df, master_sites, site_mapping, cfg, report_month
+                noc_df,
+                fw_df,
+                master_sites,
+                site_mapping,
+                cfg,
+                report_month,
             )
         )
     write_report(sheets, output_path, cfg.table_style)

@@ -28,7 +28,7 @@ def match_by_overlap(
     if not isp_df.empty:
         isp_work = isp_df.copy()
         isp_work["CKT_ID"] = isp_work["CKT_ID"].map(canonical_ckt)
-        isp_groups = {ckt: g for ckt, g in isp_work.groupby("CKT_ID", sort=False)}
+        isp_groups = {str(ckt): g for ckt, g in isp_work.groupby("CKT_ID", sort=False)}
 
     if not noc_df.empty:
         for _, noc_row in noc_df.iterrows():
@@ -56,8 +56,8 @@ def match_by_overlap(
                     if score > best_score or (
                         score == best_score
                         and (
-                            pd.isna(best_start)
-                            or isp_row["ISP_Start"] < best_start
+                            bool(pd.isna(best_start))
+                            or bool(isp_row["ISP_Start"] < best_start)
                         )
                     ):
                         best_score = score
@@ -74,7 +74,7 @@ def match_by_overlap(
                         "ISP_End": best["ISP_End"],
                         "Match_Status": "Matched",
                         "Overlap_min": round(best_score, 2),
-                    }
+                    },
                 )
             elif normalize_isp(isp_raw, cfg) not in known:
                 rows.append(
@@ -84,7 +84,7 @@ def match_by_overlap(
                         "ISP_End": pd.NaT,
                         "Match_Status": "NOC Only",
                         "Overlap_min": 0.0,
-                    }
+                    },
                 )
             else:
                 rows.append(
@@ -94,7 +94,7 @@ def match_by_overlap(
                         "ISP_End": pd.NaT,
                         "Match_Status": "Unmatched",
                         "Overlap_min": 0.0,
-                    }
+                    },
                 )
 
     if not isp_df.empty:
@@ -120,7 +120,7 @@ def match_by_overlap(
                     "Match_Status": "ISP Only",
                     "Overlap_min": 0.0,
                     "_ISP_Norm": normalize_isp(isp_row.get("ISP_Name"), cfg),
-                }
+                },
             )
 
     return pd.DataFrame(rows)
