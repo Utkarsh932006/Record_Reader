@@ -40,7 +40,11 @@ class AppConfig:
 
     @property
     def known_vendor_isps(self) -> set[str]:
-        return set(self.isp_file_map.values())
+        """Vendor names in the same canonical form used by NOC events."""
+        return {
+            self.isp_normalize.get(name, self.isp_normalize.get(name.upper(), name))
+            for name in self.isp_file_map.values()
+        }
 
 
 def default_config_path() -> Path:

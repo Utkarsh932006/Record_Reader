@@ -76,7 +76,7 @@ def match_by_overlap(
                         "Overlap_min": round(best_score, 2),
                     }
                 )
-            elif isp_raw not in known and normalize_isp(isp_raw, cfg) not in known:
+            elif normalize_isp(isp_raw, cfg) not in known:
                 rows.append(
                     {
                         **base,

@@ -8,16 +8,16 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "fuzzywuzzy>=0.18.0",
     "numpy>=2.0.0",
     "openpyxl>=3.1.5",
     "pandas>=3.0.5",
-    "python-Levenshtein>=0.25.0",
+    "pyyaml>=6.0.3",
+    "rapidfuzz>=3.14.0",
     "xlsxwriter>=3.2.0",
 ]
 
 [project.scripts]
-record-reader = "record_reader:main"
+record-reader = "record_reader.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
