@@ -47,12 +47,14 @@ site_aliases:
   BR-Madurai: BR-Madhurai
   BR-MADURAI: BR-Madhurai
   BR-Madhurai: BR-Madhurai
+  BR-ZIRAKPUR_CHANDIGHAR: BR-ZIRAKPUR_CHANDIGARH
 
 city_aliases:
   GURGAON: GURUGRAM
   PUNECDC: PUNE-CDC
   AHEMDABAD: AHMEDABAD
   DEHARADUN: DEHRADUN
+  CHANDIGHAR: CHANDIGARH
 
 firewall_host_aliases:
   HO_PRI_FW: HO

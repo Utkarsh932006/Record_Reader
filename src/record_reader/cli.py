@@ -92,7 +92,7 @@ def run(args: argparse.Namespace) -> Path:
         raise FileNotFoundError(f"Input directory does not exist: {docs_dir}")
 
     mapping_path = docs_dir / cfg.master_mapping_file
-    site_mapping, master_sites = load_master_mapping(mapping_path)
+    site_mapping, master_sites = load_master_mapping(mapping_path, cfg)
     if not master_sites:
         raise FileNotFoundError(f"Master mapping is missing or empty: {mapping_path}")
 
@@ -143,7 +143,7 @@ def run(args: argparse.Namespace) -> Path:
             ["ISP1 CKT ID", "ISP2 CKT ID"],
             ["Daily SLA %"],
         ),
-        ("Circuit Details", build_circuit_details(matched), ["CKT ID"], []),
+        ("NOC Details", build_circuit_details(matched), ["CKT ID"], []),
         ("Firewall Details", build_firewall_details(fw_df), [], []),
         (
             "Data Quality",

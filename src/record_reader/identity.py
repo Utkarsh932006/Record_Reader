@@ -142,7 +142,7 @@ def fuzzy_match_site(host: str, master_sites: list[str], cfg: AppConfig) -> str 
         if resolved:
             return resolved
 
-    # Chandigarh-Zirakpur-Branch → BR-ZIRAKPUR_CHANDIGHAR
+    # Chandigarh-Zirakpur-Branch → BR-ZIRAKPUR_CHANDIGARH
     parts = host_str.split("-")
     if len(parts) > 1:
         joined = "_".join(
@@ -152,7 +152,11 @@ def fuzzy_match_site(host: str, master_sites: list[str], cfg: AppConfig) -> str 
         )
         for ms in master_sites:
             token = ms.split("-", 1)[-1].upper().replace("-", "_")
-            if token and token in joined:
+            if token and (
+                token in joined
+                or token.replace("CHANDIGHAR", "CHANDIGARH") in joined
+                or token in joined.replace("CHANDIGHAR", "CHANDIGARH")
+            ):
                 return ms
 
     parts = host_str.split("-")

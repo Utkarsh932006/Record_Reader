@@ -9,6 +9,7 @@ import pandas as pd
 
 from record_reader.config import AppConfig
 from record_reader.identity import (
+    _alias_site,
     canonical_ckt,
     fuzzy_match_site,
     normalize_isp,
@@ -61,7 +62,9 @@ def _clean_mapping_ckt(val) -> str:
     return "" if s in INVALID_CKT else s
 
 
-def load_master_mapping(path: Path) -> tuple[dict, list[str]]:
+def load_master_mapping(
+    path: Path, cfg: AppConfig | None = None
+) -> tuple[dict, list[str]]:
     """Load site inventory. Circuit IDs are forced to strings."""
     if not path.exists():
         log.warning("Master mapping not found: %s", path)
@@ -71,6 +74,8 @@ def load_master_mapping(path: Path) -> tuple[dict, list[str]]:
     if "Location" not in df.columns:
         raise ValueError(f"Master mapping missing Location column: {list(df.columns)}")
     df["Location"] = df["Location"].astype(str).str.strip()
+    if cfg:
+        df["Location"] = df["Location"].map(lambda s: _alias_site(s, cfg) or s)
     for col in ("ISP1 CKT ID", "ISP2 CKT ID"):
         if col in df.columns:
             df[col] = df[col].map(_clean_mapping_ckt)

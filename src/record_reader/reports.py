@@ -171,6 +171,9 @@ def build_circuit_details(matched_df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(["Site", "CKT ID", "Match Status"]).reset_index(drop=True)
 
 
+build_noc_details = build_circuit_details
+
+
 def build_firewall_details(fw_df: pd.DataFrame) -> pd.DataFrame:
     if fw_df.empty:
         return pd.DataFrame()
