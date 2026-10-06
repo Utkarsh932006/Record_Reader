@@ -1,0 +1,76 @@
+table_style: TableStyleLight9
+master_mapping_file: Site_ISP_Master_Mapping.xlsx
+output_file: Generated_ISP_Report.xlsx
+noc_pattern: "Haier ISP *.xlsx"
+firewall_pattern: "Haier Firewall *.xlsx"
+noc_sheet: "Row data "
+firewall_sheet: "Row data "
+overlap_slack_minutes: 5
+flap_min_minutes: 0
+clip_to_report_month: true
+fuzzy_score_cutoff: 80
+
+isp_file_map:
+  "Haier Uptime report": JIO
+  "Haier Uptime": Airtel
+
+isp_column_map:
+  Airtel:
+    circuit_id: SI Number
+    start: SR Creation
+    end: Resolved Time
+    sheet: null
+  JIO:
+    circuit_id: Service Id
+    start: Creation Date & Time
+    end: Resolution Date & Time
+    sheet: Tickets
+
+isp_normalize:
+  Airtel: Airtel
+  Airtel_CKT: Airtel
+  JIO: Jio
+  JIO_CKT: Jio
+  Ishan: Ishan
+  CountryLink_103.134.44.66: CountryLink
+  CDC: Airtel
+  Tata: Tata
+
+isp_columns:
+  - Airtel
+  - Jio
+  - Ishan
+  - CountryLink
+  - Tata
+
+site_aliases:
+  BR-Madurai: BR-Madhurai
+  BR-MADURAI: BR-Madhurai
+  BR-Madhurai: BR-Madhurai
+
+city_aliases:
+  GURGAON: GURUGRAM
+  PUNECDC: PUNE-CDC
+  AHEMDABAD: AHMEDABAD
+  DEHARADUN: DEHRADUN
+
+firewall_host_aliases:
+  HO_PRI_FW: HO
+  HO_SEC_FW: HO
+  HO_DMZ-PRI_FW: HO
+
+host_contains_overrides:
+  - contains: "GURUGRAM WH JIO"
+    site: WH-Gurugram
+    isp: JIO
+    ckt_regex: "CKTID\\s*-\\s*(\\d+)"
+  - contains: "Nagpur-Ishan"
+    site: WH-NAGPUR
+    isp: Ishan
+    ckt_regex: "Ishan(\\d+)"
+  - contains: "WH-Ishan-HUBLI"
+    site: WH-HUBLI
+    isp: Ishan
+  - contains: "BR-JIO-Vijayawada"
+    site: BR-Vijayawada
+    isp: JIO
