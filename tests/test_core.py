@@ -5,13 +5,20 @@ import pandas as pd
 from record_reader.config import AppConfig
 from record_reader.identity import canonical_ckt
 from record_reader.intervals import (
+    event_touches_working_hours,
     intersect_intervals,
     interval_minutes,
+    is_overnight_shutdown,
     merge_intervals,
 )
 from record_reader.loaders import detect_isp_name, parse_duration_to_minutes
 from record_reader.matching import match_by_overlap
-from record_reader.reports import _infer_month, build_daily_sla, get_both_isp_down
+from record_reader.reports import (
+    _infer_month,
+    build_daily_sla,
+    build_summary,
+    get_both_isp_down,
+)
 
 
 class IntervalTests(unittest.TestCase):
@@ -169,6 +176,88 @@ class LoaderAndIdentityTests(unittest.TestCase):
         )
         self.assertTrue(result.empty)
         self.assertIn("Daily SLA %", result.columns)
+
+
+class WorkingHoursTests(unittest.TestCase):
+    def test_is_overnight_shutdown_detects_office_power_off(self):
+        wed_evening = pd.Timestamp("2026-09-02 18:30")
+        thu_morning = pd.Timestamp("2026-09-03 09:15")
+        self.assertTrue(is_overnight_shutdown(wed_evening, thu_morning))
+
+        fri_evening = pd.Timestamp("2026-09-04 19:00")
+        mon_morning = pd.Timestamp("2026-09-07 09:00")
+        self.assertTrue(is_overnight_shutdown(fri_evening, mon_morning))
+
+    def test_is_overnight_shutdown_ignores_genuine_outages(self):
+        midday_start = pd.Timestamp("2026-09-02 14:00")
+        thu_morning = pd.Timestamp("2026-09-03 11:00")
+        self.assertFalse(is_overnight_shutdown(midday_start, thu_morning))
+
+        same_day_start = pd.Timestamp("2026-09-02 10:00")
+        same_day_end = pd.Timestamp("2026-09-02 12:00")
+        self.assertFalse(is_overnight_shutdown(same_day_start, same_day_end))
+
+        self.assertFalse(is_overnight_shutdown(pd.NaT, thu_morning))
+
+    def test_event_touches_working_hours(self):
+        wh_start = pd.Timestamp("2026-09-02 14:00")  # Wed 2pm
+        wh_end = pd.Timestamp("2026-09-02 15:00")
+        self.assertTrue(event_touches_working_hours(wh_start, wh_end))
+
+        night_start = pd.Timestamp("2026-09-02 02:00")  # Wed 2am
+        night_end = pd.Timestamp("2026-09-02 04:00")
+        self.assertFalse(event_touches_working_hours(night_start, night_end))
+
+        sun_start = pd.Timestamp("2026-09-06 12:00")  # Sun
+        sun_end = pd.Timestamp("2026-09-06 15:00")
+        self.assertFalse(event_touches_working_hours(sun_start, sun_end))
+
+    def test_working_hours_sla_calculation(self):
+        cfg = AppConfig(
+            working_hours_enabled=True,
+            working_hours_start=9,
+            working_hours_end=19,
+            working_days=(0, 1, 2, 3, 4),
+            ignore_overnight_shutdowns=True,
+        )
+        # Tuesday 2026-09-01 outage from 10:00 to 11:00 (60 minutes down)
+        fw = pd.DataFrame(
+            {
+                "Site": ["BR-A"],
+                "Time": [pd.Timestamp("2026-09-01 10:00")],
+                "Recovery time": [pd.Timestamp("2026-09-01 11:00")],
+            },
+        )
+        daily = build_daily_sla(
+            pd.DataFrame(),
+            fw,
+            ["BR-A"],
+            {"BR-A": {}},
+            pd.Period("2026-09", freq="M"),
+            cfg=cfg,
+        )
+        tue_row = daily[daily["Date"] == "01-09-2026"].iloc[0]
+        self.assertEqual(tue_row["Actual Site Down (min)"], 60.0)
+        # 600 - 60 / 600 = 0.90
+        self.assertAlmostEqual(tue_row["Daily SLA %"], 0.90, places=4)
+
+        # Saturday 2026-09-05 is a weekend so it must not be in Daily SLA
+        self.assertTrue(daily[daily["Date"] == "05-09-2026"].empty)
+        self.assertEqual(daily["Date"].nunique(), 22)
+
+        # Monthly summary: 22 working days * 600 = 13200 total working minutes
+        # SLA % = (13200 - 60) / 13200 = ~99.545%
+        summary = build_summary(daily, fw, pd.DataFrame(), cfg=cfg)
+        self.assertEqual(summary.loc[0, "Actual Down Total (min)"], 60.0)
+        self.assertAlmostEqual(
+            summary.loc[0, "Monthly SLA %"], 13140.0 / 13200.0, places=4
+        )
+        # Average of Daily SLA % across working days matches Monthly SLA % exactly
+        self.assertAlmostEqual(
+            daily["Daily SLA %"].mean(),
+            summary.loc[0, "Monthly SLA %"],
+            places=6,
+        )
 
 
 if __name__ == "__main__":

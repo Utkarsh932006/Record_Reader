@@ -6,9 +6,11 @@ import pandas as pd
 from record_reader.config import AppConfig
 from record_reader.identity import canonical_ckt, normalize_isp
 from record_reader.intervals import (
+    event_touches_working_hours,
     events_to_intervals,
     intersect_intervals,
     interval_minutes,
+    is_overnight_shutdown,
 )
 
 
@@ -47,6 +49,7 @@ def get_interval_down(
     start_dt: pd.Timestamp,
     end_dt: pd.Timestamp,
     isp_name: str | None = None,
+    cfg: AppConfig | None = None,
 ) -> float:
     if df.empty:
         return 0.0
@@ -54,7 +57,21 @@ def get_interval_down(
     if isp_name:
         mask = mask & (df["_ISP_Norm"] == isp_name)
     subset = df.loc[mask]
-    intervals = events_to_intervals(subset, "Time", "Recovery time", start_dt, end_dt)
+    ignore = cfg.ignore_overnight_shutdowns if cfg else False
+    s_hour = cfg.shutdown_start_hour if cfg else 18
+    e_hour = cfg.shutdown_end_hour if cfg else 10
+    e_min = cfg.shutdown_end_minute if cfg else 30
+    intervals = events_to_intervals(
+        subset,
+        "Time",
+        "Recovery time",
+        start_dt,
+        end_dt,
+        ignore_shutdowns=ignore,
+        shutdown_start_hour=s_hour,
+        shutdown_end_hour=e_hour,
+        shutdown_end_minute=e_min,
+    )
     return interval_minutes(intervals)
 
 
@@ -65,13 +82,38 @@ def get_both_isp_down(
     isp2: str,
     start_dt: pd.Timestamp,
     end_dt: pd.Timestamp,
+    cfg: AppConfig | None = None,
 ) -> float:
     if not isp1 or not isp2 or noc_df.empty:
         return 0.0
     a = noc_df[(noc_df["Site"] == site) & (noc_df["_ISP_Norm"] == isp1)]
     b = noc_df[(noc_df["Site"] == site) & (noc_df["_ISP_Norm"] == isp2)]
-    left = events_to_intervals(a, "Time", "Recovery time", start_dt, end_dt)
-    right = events_to_intervals(b, "Time", "Recovery time", start_dt, end_dt)
+    ignore = cfg.ignore_overnight_shutdowns if cfg else False
+    s_hour = cfg.shutdown_start_hour if cfg else 18
+    e_hour = cfg.shutdown_end_hour if cfg else 10
+    e_min = cfg.shutdown_end_minute if cfg else 30
+    left = events_to_intervals(
+        a,
+        "Time",
+        "Recovery time",
+        start_dt,
+        end_dt,
+        ignore_shutdowns=ignore,
+        shutdown_start_hour=s_hour,
+        shutdown_end_hour=e_hour,
+        shutdown_end_minute=e_min,
+    )
+    right = events_to_intervals(
+        b,
+        "Time",
+        "Recovery time",
+        start_dt,
+        end_dt,
+        ignore_shutdowns=ignore,
+        shutdown_start_hour=s_hour,
+        shutdown_end_hour=e_hour,
+        shutdown_end_minute=e_min,
+    )
     return interval_minutes(intersect_intervals(left, right))
 
 
@@ -81,6 +123,7 @@ def build_daily_sla(
     master_sites: list[str],
     site_mapping: dict,
     month: pd.Period | None = None,
+    cfg: AppConfig | None = None,
 ) -> pd.DataFrame:
     report_month, month_start, month_end = report_month_bounds(noc_df, fw_df, month)
     if report_month is None or month_start is None or month_end is None:
@@ -88,8 +131,22 @@ def build_daily_sla(
 
     days = pd.date_range(month_start, month_end - pd.Timedelta(seconds=1), freq="D")
     rows = []
+    use_wh = cfg is not None and cfg.working_hours_enabled
+    wh_start_h = cfg.working_hours_start if cfg else 9
+    wh_end_h = cfg.working_hours_end if cfg else 19
+    working_days = cfg.working_days if cfg else (0, 1, 2, 3, 4)
+    daily_cap = (wh_end_h - wh_start_h) * 60.0 if use_wh else 1440.0
+
     for day in days:
-        day_end = day + pd.Timedelta(days=1)
+        if use_wh and day.dayofweek not in working_days:
+            continue
+        if use_wh:
+            day_start = day + pd.Timedelta(hours=wh_start_h)
+            day_end = day + pd.Timedelta(hours=wh_end_h)
+        else:
+            day_start = day
+            day_end = day + pd.Timedelta(days=1)
+
         for site in master_sites:
             mapping = _mapping_for(site, site_mapping)
             isp1 = mapping.get("ISP1 Name") or ""
@@ -100,10 +157,23 @@ def build_daily_sla(
                 isp2 = ""
             ckt1 = canonical_ckt(mapping.get("ISP1 CKT ID"))
             ckt2 = canonical_ckt(mapping.get("ISP2 CKT ID"))
-            down1 = get_interval_down(noc_df, site, day, day_end, isp1) if isp1 else 0.0
-            down2 = get_interval_down(noc_df, site, day, day_end, isp2) if isp2 else 0.0
-            both = get_both_isp_down(noc_df, site, isp1, isp2, day, day_end)
-            actual = get_interval_down(fw_df, site, day, day_end)
+
+            down1 = (
+                get_interval_down(noc_df, site, day_start, day_end, isp1, cfg=cfg)
+                if isp1
+                else 0.0
+            )
+            down2 = (
+                get_interval_down(noc_df, site, day_start, day_end, isp2, cfg=cfg)
+                if isp2
+                else 0.0
+            )
+            both = get_both_isp_down(
+                noc_df, site, isp1, isp2, day_start, day_end, cfg=cfg
+            )
+            actual = get_interval_down(fw_df, site, day_start, day_end, cfg=cfg)
+            sla_pct = max(0.0, (daily_cap - actual) / daily_cap)
+
             rows.append(
                 {
                     "Date": day.strftime("%d-%m-%Y"),
@@ -116,7 +186,7 @@ def build_daily_sla(
                     "ISP2 Down (min)": round(down2, 2),
                     "Both ISPs Down (min)": round(both, 2),
                     "Actual Site Down (min)": round(actual, 2),
-                    "Daily SLA %": (1440 - actual) / 1440.0,
+                    "Daily SLA %": sla_pct,
                 },
             )
     if not rows:
@@ -201,6 +271,7 @@ def build_summary(
     daily_sla_df: pd.DataFrame,
     fw_df: pd.DataFrame,
     noc_df: pd.DataFrame,
+    cfg: AppConfig | None = None,
 ) -> pd.DataFrame:
     if daily_sla_df.empty:
         return pd.DataFrame()
@@ -215,21 +286,95 @@ def build_summary(
         )
         .reset_index()
     )
-    num_days = daily_sla_df["Date"].nunique()
-    total_minutes = num_days * 1440.0
-    summary["Monthly SLA %"] = (total_minutes - summary["Actual_Down"]) / total_minutes
+    use_wh = cfg is not None and cfg.working_hours_enabled
+    wh_start_h = cfg.working_hours_start if cfg else 9
+    wh_end_h = cfg.working_hours_end if cfg else 19
+    working_days = cfg.working_days if cfg else (0, 1, 2, 3, 4)
+    if use_wh:
+        daily_cap = (wh_end_h - wh_start_h) * 60.0
+        dates = pd.to_datetime(daily_sla_df["Date"].unique(), format="%d-%m-%Y")
+        num_working_days = int(dates.dayofweek.isin(working_days).sum())
+        total_minutes = max(1.0, num_working_days * daily_cap)
+    else:
+        num_days = daily_sla_df["Date"].nunique()
+        total_minutes = max(1.0, num_days * 1440.0)
 
-    worst_idx = daily_sla_df.groupby("Site")["Actual Site Down (min)"].idxmax()
-    worst = daily_sla_df.loc[worst_idx][
+    summary["Monthly SLA %"] = np.clip(
+        (total_minutes - summary["Actual_Down"]) / total_minutes,
+        0.0,
+        1.0,
+    )
+
+    dates_s = pd.to_datetime(daily_sla_df["Date"], format="%d-%m-%Y")
+    if use_wh:
+        working_mask = dates_s.dt.dayofweek.isin(working_days)
+        eval_daily = daily_sla_df[working_mask] if working_mask.any() else daily_sla_df
+    else:
+        eval_daily = daily_sla_df
+
+    worst_idx = eval_daily.groupby("Site")["Actual Site Down (min)"].idxmax()
+    worst = eval_daily.loc[worst_idx][
         ["Site", "Date", "Actual Site Down (min)"]
     ].rename(
         columns={"Date": "Worst Day", "Actual Site Down (min)": "Worst Day Down (min)"},
     )
     summary = summary.merge(worst, on="Site", how="left")
 
-    if not fw_df.empty:
+    eval_fw = fw_df
+    eval_noc = noc_df
+    if use_wh and cfg:
+        if not fw_df.empty:
+            fw_mask = fw_df.apply(
+                lambda r: (
+                    not (
+                        cfg.ignore_overnight_shutdowns
+                        and is_overnight_shutdown(
+                            r["Time"],
+                            r["Recovery time"],
+                            start_hour=cfg.shutdown_start_hour,
+                            end_hour=cfg.shutdown_end_hour,
+                            end_minute=cfg.shutdown_end_minute,
+                        )
+                    )
+                    and event_touches_working_hours(
+                        r["Time"],
+                        r["Recovery time"],
+                        wh_start=cfg.working_hours_start,
+                        wh_end=cfg.working_hours_end,
+                        working_days=cfg.working_days,
+                    )
+                ),
+                axis=1,
+            )
+            eval_fw = fw_df[fw_mask]
+        if not noc_df.empty:
+            noc_mask = noc_df.apply(
+                lambda r: (
+                    not (
+                        cfg.ignore_overnight_shutdowns
+                        and is_overnight_shutdown(
+                            r["Time"],
+                            r["Recovery time"],
+                            start_hour=cfg.shutdown_start_hour,
+                            end_hour=cfg.shutdown_end_hour,
+                            end_minute=cfg.shutdown_end_minute,
+                        )
+                    )
+                    and event_touches_working_hours(
+                        r["Time"],
+                        r["Recovery time"],
+                        wh_start=cfg.working_hours_start,
+                        wh_end=cfg.working_hours_end,
+                        working_days=cfg.working_days,
+                    )
+                ),
+                axis=1,
+            )
+            eval_noc = noc_df[noc_mask]
+
+    if not eval_fw.empty:
         fw_counts = (
-            fw_df[fw_df["Site"].notna()]
+            eval_fw[eval_fw["Site"].notna()]
             .groupby("Site")
             .size()
             .reset_index(name="FW Incidents")
@@ -239,13 +384,19 @@ def build_summary(
     else:
         summary["FW Incidents"] = 0
 
-    if not noc_df.empty:
-        noc_counts = noc_df.groupby("Site").size().reset_index(name="NOC Incidents")
+    if not eval_noc.empty:
+        noc_counts = (
+            eval_noc[eval_noc["Site"].notna()]
+            .groupby("Site")
+            .size()
+            .reset_index(name="NOC Incidents")
+        )
         summary = summary.merge(noc_counts, on="Site", how="left")
         summary["NOC Incidents"] = summary["NOC Incidents"].fillna(0).astype(int)
-        if "Duration_min" in noc_df.columns:
+        if "Duration_min" in eval_noc.columns:
             mttr = (
-                noc_df.groupby("Site")["Duration_min"]
+                eval_noc[eval_noc["Site"].notna()]
+                .groupby("Site")["Duration_min"]
                 .mean()
                 .reset_index(name="NOC MTTR (min)")
             )

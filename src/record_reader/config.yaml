@@ -10,6 +10,20 @@ flap_min_minutes: 0
 clip_to_report_month: true
 fuzzy_score_cutoff: 80
 
+working_hours_enabled: true
+working_hours_start: 9
+working_hours_end: 19
+working_days:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+ignore_overnight_shutdowns: true
+shutdown_start_hour: 18
+shutdown_end_hour: 10
+shutdown_end_minute: 30
+
 isp_file_map:
   "Haier Uptime report": JIO
   "Haier Uptime": Airtel

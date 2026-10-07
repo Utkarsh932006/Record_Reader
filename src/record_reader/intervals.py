@@ -80,17 +80,71 @@ def overlap_minutes(
     return 0.0
 
 
+def is_overnight_shutdown(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    start_hour: int = 18,
+    end_hour: int = 10,
+    end_minute: int = 30,
+) -> bool:
+    """Check if an event is an end-of-day office shutdown rather than an outage."""
+    if pd.isna(start) or pd.isna(end) or end <= start:
+        return False
+    if end.date() > start.date():
+        started_in_evening = (
+            start.hour >= start_hour or start.hour < 9 or start.dayofweek >= 5
+        )
+        recovered_in_morning = end.hour < end_hour or (
+            end.hour == end_hour and end.minute <= end_minute
+        )
+        if started_in_evening and recovered_in_morning:
+            return True
+    return False
+
+
+def event_touches_working_hours(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    wh_start: int = 9,
+    wh_end: int = 19,
+    working_days: tuple[int, ...] = (0, 1, 2, 3, 4),
+) -> bool:
+    """Check if an event overlaps with office working hours."""
+    if pd.isna(start) or pd.isna(end) or end <= start:
+        return False
+    days = pd.date_range(start.floor("D"), end.floor("D"), freq="D")
+    for d in days:
+        if d.dayofweek in working_days:
+            s = max(start, d + pd.Timedelta(hours=wh_start))
+            e = min(end, d + pd.Timedelta(hours=wh_end))
+            if e > s:
+                return True
+    return False
+
+
 def events_to_intervals(
     df: pd.DataFrame,
     start_col: str,
     end_col: str,
     window_start: pd.Timestamp,
     window_end: pd.Timestamp,
+    ignore_shutdowns: bool = False,
+    shutdown_start_hour: int = 18,
+    shutdown_end_hour: int = 10,
+    shutdown_end_minute: int = 30,
 ) -> list[Interval]:
     intervals: list[Interval] = []
     if df.empty:
         return intervals
     for start, end in zip(df[start_col], df[end_col], strict=True):
+        if ignore_shutdowns and is_overnight_shutdown(
+            start,
+            end,
+            start_hour=shutdown_start_hour,
+            end_hour=shutdown_end_hour,
+            end_minute=shutdown_end_minute,
+        ):
+            continue
         clipped = clip_interval(start, end, window_start, window_end)
         if clipped:
             intervals.append(clipped)

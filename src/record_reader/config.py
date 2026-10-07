@@ -37,6 +37,14 @@ class AppConfig:
     city_aliases: dict[str, str] = field(default_factory=dict)
     firewall_host_aliases: dict[str, str] = field(default_factory=dict)
     host_contains_overrides: list[dict[str, Any]] = field(default_factory=list)
+    working_hours_enabled: bool = True
+    working_hours_start: int = 9
+    working_hours_end: int = 19
+    working_days: tuple[int, ...] = (0, 1, 2, 3, 4)
+    ignore_overnight_shutdowns: bool = True
+    shutdown_start_hour: int = 18
+    shutdown_end_hour: int = 10
+    shutdown_end_minute: int = 30
 
     @property
     def known_vendor_isps(self) -> set[str]:
@@ -85,4 +93,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         city_aliases=dict(raw.get("city_aliases") or {}),
         firewall_host_aliases=dict(raw.get("firewall_host_aliases") or {}),
         host_contains_overrides=list(raw.get("host_contains_overrides") or []),
+        working_hours_enabled=bool(raw.get("working_hours_enabled", True)),
+        working_hours_start=int(raw.get("working_hours_start", 9)),
+        working_hours_end=int(raw.get("working_hours_end", 19)),
+        working_days=tuple(raw.get("working_days", [0, 1, 2, 3, 4])),
+        ignore_overnight_shutdowns=bool(raw.get("ignore_overnight_shutdowns", True)),
+        shutdown_start_hour=int(raw.get("shutdown_start_hour", 18)),
+        shutdown_end_hour=int(raw.get("shutdown_end_hour", 10)),
+        shutdown_end_minute=int(raw.get("shutdown_end_minute", 30)),
     )

@@ -63,6 +63,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include the large per-minute weekly detail sheets.",
     )
+    parser.add_argument(
+        "--all-hours",
+        action="store_true",
+        help="Calculate 24x7 downtime instead of working hours.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Show diagnostic logs.")
     return parser
 
@@ -87,6 +92,9 @@ def _resolve_output(path: Path | None, docs_dir: Path, cfg: AppConfig) -> Path:
 def run(args: argparse.Namespace) -> Path:
     """Generate a report and return the output path."""
     cfg = load_config(args.config)
+    if args.all_hours:
+        cfg.working_hours_enabled = False
+        cfg.ignore_overnight_shutdowns = False
     docs_dir = args.docs_dir.expanduser().resolve()
     if not docs_dir.is_dir():
         raise FileNotFoundError(f"Input directory does not exist: {docs_dir}")
@@ -134,9 +142,21 @@ def run(args: argparse.Namespace) -> Path:
 
     isp_df = load_all_isp_files(docs_dir, cfg, excluded)
     matched = match_by_overlap(noc_df, isp_df, cfg, ckt_to_sites(site_mapping))
-    daily_sla = build_daily_sla(noc_df, fw_df, master_sites, site_mapping, report_month)
+    daily_sla = build_daily_sla(
+        noc_df,
+        fw_df,
+        master_sites,
+        site_mapping,
+        report_month,
+        cfg=cfg,
+    )
     sheets: list[tuple[str, pd.DataFrame, list[str], list[str]]] = [
-        ("Summary", build_summary(daily_sla, fw_df, noc_df), [], ["Monthly SLA %"]),
+        (
+            "Summary",
+            build_summary(daily_sla, fw_df, noc_df, cfg=cfg),
+            [],
+            ["Monthly SLA %"],
+        ),
         (
             "Daily SLA",
             daily_sla,
